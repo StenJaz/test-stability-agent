@@ -38,11 +38,11 @@ SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.m
 #   OPENAI_BASE_URL= (не задавать)
 #   --model gpt-4o-mini
 
-DEFAULT_MODEL = "gemini-2.0-flash"
-DEFAULT_BATCH_SIZE = 15   # тестов за один LLM-запрос
-BATCH_DELAY_SEC = 5       # пауза между батчами (Gemini: 15 RPM → 4 сек минимум)
-MAX_RETRIES = 3           # попыток на батч при 429
-RETRY_BASE_SEC = 10       # базовая задержка retry (экспоненциальная: 10, 20, 40)
+DEFAULT_MODEL = "mistralai/mistral-small-3.1-24b-instruct:free"
+DEFAULT_BATCH_SIZE = 5    # тестов за один LLM-запрос (мало → меньше шанс timeout)
+BATCH_DELAY_SEC = 10      # пауза между батчами (8 RPM → строго >= 7.5 сек)
+MAX_RETRIES = 4           # попыток на батч при 429
+RETRY_BASE_SEC = 20       # базовая задержка retry (экспоненциальная: 20, 40, 80, 160)
 
 
 def _load_system_prompt() -> str:
