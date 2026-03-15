@@ -112,6 +112,7 @@ def cmd_analyze(args):
         run_id=args.run_id,
         failures=failures,
         model=args.model,
+        batch_size=args.batch_size,
     )
 
     result_json = json.dumps(result, ensure_ascii=False, indent=2)
@@ -174,7 +175,10 @@ def main():
     # analyze
     p_analyze = sub.add_parser("analyze", help="Запустить LLM-анализ для прогона")
     p_analyze.add_argument("--run-id", required=True, help="ID прогона для анализа")
-    p_analyze.add_argument("--model", default="gpt-4o", help="OpenAI модель (по умолчанию gpt-4o)")
+    p_analyze.add_argument("--model", default="google/gemini-2.0-flash-exp:free",
+                           help="Модель (по умолчанию google/gemini-2.0-flash-exp:free)")
+    p_analyze.add_argument("--batch-size", type=int, default=25,
+                           help="Тестов за один LLM-запрос (по умолчанию 25)")
     p_analyze.set_defaults(func=cmd_analyze)
 
     # report
