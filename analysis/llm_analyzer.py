@@ -21,7 +21,7 @@ from ingestion.allure_parser import TestResult
 from storage.db import get_test_history
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
-DEFAULT_MODEL = "google/gemini-2.0-flash-exp:free"
+DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 DEFAULT_BATCH_SIZE = 25  # тестов за один LLM-запрос
 BATCH_DELAY_SEC = 2       # пауза между батчами (rate limit)
 
