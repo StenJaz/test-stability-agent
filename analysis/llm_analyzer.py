@@ -22,11 +22,27 @@ from ingestion.allure_parser import TestResult
 from storage.db import get_test_history
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
-DEFAULT_BATCH_SIZE = 10   # тестов за один LLM-запрос (снижено для :free лимитов)
-BATCH_DELAY_SEC = 10      # пауза между батчами (8 RPM → ~7.5 сек минимум)
+# Поддерживаемые провайдеры (задаётся через .env или --model / --base-url):
+#
+# --- Google Gemini (рекомендуется, бесплатно 15 RPM / 1500 RPD) ---
+#   OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+#   OPENAI_API_KEY=AIza...  (получить: https://aistudio.google.com/apikey)
+#   --model gemini-2.0-flash
+#
+# --- OpenRouter бесплатные модели (лимиты жёсткие, часто перегружены) ---
+#   OPENAI_BASE_URL=https://openrouter.ai/api/v1
+#   --model meta-llama/llama-3.3-70b-instruct:free
+#   --model mistralai/mistral-small-3.1-24b-instruct:free
+#
+# --- OpenAI напрямую (платно) ---
+#   OPENAI_BASE_URL= (не задавать)
+#   --model gpt-4o-mini
+
+DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_BATCH_SIZE = 15   # тестов за один LLM-запрос
+BATCH_DELAY_SEC = 5       # пауза между батчами (Gemini: 15 RPM → 4 сек минимум)
 MAX_RETRIES = 3           # попыток на батч при 429
-RETRY_BASE_SEC = 15       # базовая задержка retry (экспоненциальная: 15, 30, 60)
+RETRY_BASE_SEC = 10       # базовая задержка retry (экспоненциальная: 10, 20, 40)
 
 
 def _load_system_prompt() -> str:
