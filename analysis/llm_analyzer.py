@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -22,8 +23,10 @@ from storage.db import get_test_history
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
 DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
-DEFAULT_BATCH_SIZE = 25  # тестов за один LLM-запрос
-BATCH_DELAY_SEC = 2       # пауза между батчами (rate limit)
+DEFAULT_BATCH_SIZE = 10   # тестов за один LLM-запрос (снижено для :free лимитов)
+BATCH_DELAY_SEC = 10      # пауза между батчами (8 RPM → ~7.5 сек минимум)
+MAX_RETRIES = 3           # попыток на батч при 429
+RETRY_BASE_SEC = 15       # базовая задержка retry (экспоненциальная: 15, 30, 60)
 
 
 def _load_system_prompt() -> str:
@@ -85,9 +88,41 @@ def _build_user_message(
     return "\n".join(parts)
 
 
+def _extract_json(raw: str) -> dict:
+    """
+    Извлекает JSON из ответа модели.
+    Обрабатывает: чистый JSON, markdown-блок ```json...```, частичный текст вокруг JSON.
+    Выбрасывает ValueError если JSON не найден.
+    """
+    if raw is None:
+        raise ValueError("LLM вернул None вместо текста")
+
+    # Убираем markdown-блок если есть
+    if "```" in raw:
+        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
+        if m:
+            raw = m.group(1).strip()
+
+    # Пробуем распарсить напрямую
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Ищем первый { ... } блок в тексте (модель могла добавить преамбулу)
+    m = re.search(r"\{[\s\S]+\}", raw)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Не удалось извлечь JSON из ответа LLM. Начало ответа: {raw[:200]!r}")
+
+
 def _call_llm(client: OpenAI, model: str, system_prompt: str, user_message: str) -> dict:
     """
-    Один LLM-запрос. Возвращает распарсенный dict.
+    Один LLM-запрос с retry при 429. Возвращает распарсенный dict.
     Для моделей с суффиксом :free не передаём response_format (не все поддерживают).
     """
     is_free_tier = ":free" in model
@@ -103,17 +138,22 @@ def _call_llm(client: OpenAI, model: str, system_prompt: str, user_message: str)
     if not is_free_tier:
         kwargs["response_format"] = {"type": "json_object"}
 
-    response = client.chat.completions.create(**kwargs)
-    raw = response.choices[0].message.content
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(**kwargs)
+            raw = response.choices[0].message.content
+            return _extract_json(raw)
+        except Exception as e:
+            err_str = str(e)
+            is_rate_limit = "429" in err_str or "rate" in err_str.lower()
+            is_last = attempt == MAX_RETRIES
 
-    # Вырезаем JSON из markdown-блока, если модель завернула его в ```json ... ```
-    if "```" in raw:
-        import re
-        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
-        if m:
-            raw = m.group(1).strip()
-
-    return json.loads(raw)
+            if is_rate_limit and not is_last:
+                wait = RETRY_BASE_SEC * (2 ** (attempt - 1))  # 15, 30, 60
+                print(f"    [RETRY {attempt}/{MAX_RETRIES}] Rate limit — жду {wait} сек...")
+                time.sleep(wait)
+            else:
+                raise  # перебрасываем если не rate-limit или попытки кончились
 
 
 def _merge_batches(batches: list[dict], run_id: str) -> dict:
@@ -144,7 +184,7 @@ def analyze_failures(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict:
     """
-    Анализирует падения через LLM с батчингом.
+    Анализирует падения через LLM с батчингом и retry при rate limit.
     Большие прогоны разбиваются на порции по batch_size тестов.
     Возвращает объединённый dict со всеми результатами.
     """
@@ -170,12 +210,18 @@ def analyze_failures(
     ]
     total_batches = len(batches_input)
 
+    # Оценка времени: batch_delay + возможные retry
+    est_min = round(total_batches * BATCH_DELAY_SEC / 60, 1)
     print(f"[LLM] Всего упавших: {len(failures)}, "
           f"батчей: {total_batches} по {batch_size} тестов (модель: {model})")
+    print(f"[LLM] Пауза между батчами: {BATCH_DELAY_SEC} сек, "
+          f"ориентировочное время: ~{est_min} мин")
 
     batch_results = []
+    failed_batches = []
+
     for idx, batch in enumerate(batches_input, 1):
-        print(f"[LLM] Батч {idx}/{total_batches} ({len(batch)} тестов)...")
+        print(f"[LLM] Батч {idx}/{total_batches} ({len(batch)} тестов)...", end=" ", flush=True)
         user_message = _build_user_message(
             f"{run_id}_batch{idx}", batch, codebase_context
         )
@@ -184,17 +230,29 @@ def analyze_failures(
             batch_results.append(result)
             bugs = result.get('summary', {}).get('application_bugs', '?')
             tests = result.get('summary', {}).get('test_issues', '?')
-            print(f"[LLM] Батч {idx} готов: APP_BUG={bugs}, TEST={tests}")
+            print(f"OK  APP_BUG={bugs}, TEST={tests}")
         except Exception as e:
-            print(f"[ERROR] Батч {idx} упал: {e}")
-            print(f"        Пропускаем и продолжаем...")
+            failed_batches.append(idx)
+            print(f"FAIL")
+            print(f"    [ERROR] {e}")
 
-        # Пауза между батчами чтобы не словить rate limit
+        # Пауза между батчами
         if idx < total_batches:
             time.sleep(BATCH_DELAY_SEC)
 
     if not batch_results:
-        raise RuntimeError("Все батчи завершились с ошибкой. Проверь ключ и баланс.")
+        raise RuntimeError(
+            f"Все {total_batches} батчей завершились с ошибкой.\n"
+            "Возможные причины:\n"
+            "  1. Rate limit на бесплатной модели — подожди минуту и повтори\n"
+            "  2. Неверный OPENAI_API_KEY или OPENAI_BASE_URL\n"
+            "  3. Нет баланса на аккаунте OpenRouter\n"
+            "Попробуй другую модель: --model mistralai/mistral-small-3.1-24b-instruct:free"
+        )
+
+    if failed_batches:
+        print(f"\n[WARN] Не обработаны батчи: {failed_batches} "
+              f"({len(failed_batches) * batch_size} тестов пропущено)")
 
     merged = _merge_batches(batch_results, run_id)
     s = merged["summary"]
