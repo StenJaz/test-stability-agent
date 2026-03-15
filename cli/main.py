@@ -175,8 +175,12 @@ def main():
     # analyze
     p_analyze = sub.add_parser("analyze", help="Запустить LLM-анализ для прогона")
     p_analyze.add_argument("--run-id", required=True, help="ID прогона для анализа")
-    p_analyze.add_argument("--model", default="google/gemini-2.0-flash-exp:free",
-                           help="Модель (по умолчанию google/gemini-2.0-flash-exp:free)")
+    p_analyze.add_argument("--model", default="meta-llama/llama-3.3-70b-instruct:free",
+                           help="Модель (по умолчанию meta-llama/llama-3.3-70b-instruct:free)")
+    # Другие рабочие бесплатные модели (OpenRouter, март 2026):
+    #   mistralai/mistral-small-3.1-24b-instruct:free  (128k контекст)
+    #   google/gemma-3-27b-it:free                     (131k контекст)
+    #   nousresearch/hermes-3-llama-3.1-405b:free      (131k контекст, очень сильная)
     p_analyze.add_argument("--batch-size", type=int, default=25,
                            help="Тестов за один LLM-запрос (по умолчанию 25)")
     p_analyze.set_defaults(func=cmd_analyze)
